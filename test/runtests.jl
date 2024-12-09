@@ -5,21 +5,31 @@ using Pkg
 const backend = JACC.JACCPreferences.backend
 
 @static if backend == "cuda"
-    Pkg.add(; name = "CUDA", version = "v5.1.1")
-    @show "CUDA backend loaded"
-    include("tests_cuda.jl")
+    # Pkg.add(; name = "CUDA", version = "v5.1.1")
+    Pkg.add("CUDA")
+    @info "CUDA backend loaded"
+    using CUDA
 
 elseif backend == "amdgpu"
     Pkg.add(; name = "AMDGPU", version = "v0.8.6")
-    @show "AMDGPU backend loaded"
-    include("tests_amdgpu.jl")
+    # Pkg.add("AMDGPU")
+    @info "AMDGPU backend loaded"
+    using AMDGPU
 
 elseif backend == "oneapi"
     Pkg.add("oneAPI")
-    @show "OneAPI backend loaded"
-    include("tests_oneapi.jl")
+    @info "oneAPI backend loaded"
+    using oneAPI
 
 elseif backend == "threads"
-    @show "Threads backend loaded"
-    include("tests_threads.jl")
+    @info "Threads backend loaded"
+end
+
+using ReTest
+include("JACCTests.jl")
+
+if isempty(ARGS)
+    retest(JACCTests)
+else
+    retest(JACCTests, ARGS)
 end
