@@ -41,6 +41,8 @@ function default_stream end
     blocks = 0
     shmem_size::Int = 0
     sync::Bool = false
+    ret = nothing
+    buffer = nothing
 end
 
 launch_spec(; kw...) = LaunchSpec{typeof(default_backend())}(; kw...)

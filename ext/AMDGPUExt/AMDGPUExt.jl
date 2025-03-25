@@ -239,6 +239,43 @@ function JACC.parallel_reduce(
     return Base.Array(rret)[]
 end
 
+function JACC.parallel_reduce(spec::LaunchSpec{AMDGPUBackend},
+        N::Integer, op, f::Callable, x...; init)
+    ret_inst = AMDGPU.ROCArray{typeof(init)}(undef, 0)
+    kernel1 = @roc launch=false _parallel_reduce_amdgpu(
+        N, op, ret_inst, f, x...)
+    config1 = AMDGPU.launch_configuration(kernel1)
+    threads1 = config1.groupsize
+
+    rret = spec.ret 
+    if rret == nothing
+        rret = AMDGPU.ROCArray([init])
+    end
+    kernel2 = @roc launch=false reduce_kernel_amdgpu(1, op, ret_inst, rret)
+    config2 = AMDGPU.launch_configuration(kernel2)
+    threads2 = config2.groupsize
+
+    threads = min(threads1, threads2, 512)
+    blocks = cld(N, threads)
+
+    shmem_size = threads * sizeof(Float64)
+
+    ret_buffer = spec.buffer 
+    if ret_buffer == nothing
+        ret_buffer = fill!(AMDGPU.ROCArray{typeof(init)}(undef, blocks), init)
+    end
+    kernel1(
+        N, op, ret_buffer, f, x...; groupsize = threads,
+        gridsize = blocks, stream=spec.stream, shmem = shmem_size)
+    AMDGPU.synchronize()
+    kernel2(blocks, op, ret_buffer, rret; groupsize = threads,
+        gridsize = 1, stream=spec.stream, shmem = shmem_size)
+    if spec.sync
+        AMDGPU.synchronize()
+    end
+    return nothing #Base.Array(rret)[]
+end
+
 function JACC.parallel_reduce(
         ::AMDGPUBackend, (M, N)::Tuple{Integer, Integer}, op, f::Callable, x...; init)
     numThreads = 16
