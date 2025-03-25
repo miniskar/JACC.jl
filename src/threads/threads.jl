@@ -17,7 +17,7 @@ function _maybe_threaded(ex)
         if Threads.nthreads() == 1
             $ex
         else
-            Threads.@threads :static $ex
+            Threads.@threads $ex
         end
     end
 end
