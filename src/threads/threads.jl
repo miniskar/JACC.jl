@@ -17,7 +17,7 @@ function _maybe_threaded(ex)
         if Threads.nthreads() == 1
             $ex
         else
-            Threads.@threads $ex
+            Threads.@threads :static $ex
         end
     end
 end
@@ -75,11 +75,11 @@ end
 function JACC.parallel_reduce(
         ::ThreadsBackend, N::Integer, op, f::Callable, x...; init)
     ret = init
-    tmp = fill(init, Threads.nthreads())
+    tmp = fill(init, Threads.maxthreadid())
     @maybe_threaded for i in 1:N
         tmp[Threads.threadid()] = op.(tmp[Threads.threadid()], f(i, x...))
     end
-    for i in 1:Threads.nthreads()
+    for i in 1:Threads.maxthreadid()
         ret = op.(ret, tmp[i])
     end
     return ret
@@ -88,14 +88,14 @@ end
 function JACC.parallel_reduce(
         ::ThreadsBackend, (M, N)::Tuple{Integer, Integer}, op, f::Callable, x...; init)
     ret = init
-    tmp = fill(init, Threads.nthreads())
+    tmp = fill(init, Threads.maxthreadid())
     @maybe_threaded for j in 1:N
         for i in 1:M
             tmp[Threads.threadid()] = op.(
                 tmp[Threads.threadid()], f(i, j, x...))
         end
     end
-    for i in 1:Threads.nthreads()
+    for i in 1:Threads.maxthreadid()
         ret = op.(ret, tmp[i])
     end
     return ret
