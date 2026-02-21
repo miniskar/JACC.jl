@@ -78,8 +78,40 @@ end
     parallel_for(f, spec, dims, x...)
 end
 
-@inline function parallel_for(; dims::AllDims, f, args::Tuple, kw...)
-    parallel_for(f, launch_spec(; kw...), dims, args...)
+# @inline function _range_kernel(i, range, f, x...)::Nothing
+#     @inbounds f(range[i], x...)
+#     return nothing
+# end
+
+@inline _range_kernel(i, range, f, x...) = @inbounds f(range[i], x...)
+
+@inline function parallel_for(f, range::AbstractRange, x...)
+    parallel_for(_range_kernel, length(range), range, f, x...)
+end
+
+@inline function parallel_for(f, spec::LaunchSpec, range::AbstractRange, x...)
+    parallel_for(_range_kernel, spec, length(range), range, f, x...)
+end
+
+struct _RangesKernel{N} end
+
+@inline function (::_RangesKernel{N})(args...) where {N}
+    @inbounds rt = args[N + 1]
+    @inbounds return args[N + 2](getindex.(rt, args[1:N])..., args[(N + 3):end]...)
+end
+
+@inline function parallel_for(f, range::NTuple{N, AbstractRange}, x...) where {N}
+    parallel_for(_RangesKernel{N}(), length.(range), range, f, x...)
+end
+
+@inline function parallel_for(f, spec::LaunchSpec,
+        range::NTuple{N, AbstractRange}, x...) where {N}
+    parallel_for(_RangesKernel{N}(), spec, length.(range), range, f, x...)
+end
+
+
+@inline function parallel_for(; range::TR, f, args::Tuple, kw...) where {TR}
+    parallel_for(f, launch_spec(; kw...), range, args...)
 end
 
 default_init(::Type{T}, ::typeof(+)) where {T} = zero(T)
@@ -98,29 +130,28 @@ reduce_workspace() = reduce_workspace(default_backend(), default_float()())
 
 reduce_workspace(init::T) where {T} = reduce_workspace(default_backend(), init)
 
-@kwdef mutable struct ParallelReduce{Backend, T, Op, Dim}
-    dims::Dim = zeros(Int, Dim)
+@kwdef mutable struct ParallelReduce{Backend, T, Op, R, W <: ReduceWorkspace}
+    range::R = zeros(Int, R)
     op::Op = () -> nothing
     init::T = default_init(T, op)
     stream = default_stream(Backend())
     sync::Bool = true
-    workspace::ReduceWorkspace = reduce_workspace(Backend(), init)
+    workspace::W = reduce_workspace(Backend(), init)
 end
 
-@inline function ParallelReduce{Backend, T}(; dims, op, kw...) where {Backend, T}
-    ParallelReduce{Backend, T, typeof(op), typeof(dims)}(; dims = dims, op = op, kw...)
-end
-
-@inline function reducer(; type = nothing, dims, op = +, init = nothing)
+@inline function reducer(;
+        range, backend::Backend = default_backend(), type = nothing,
+        op = +, init = nothing, kw...) where {Backend}
     _init = _resolve_init_type(op, type, init)
+    _workspace = reduce_workspace(default_backend(), _init)
     ParallelReduce{
-        typeof(default_backend()), typeof(_init), typeof(op), typeof(dims)}(;
-        dims = dims, op = op, init = _init)
+        Backend, typeof(_init), typeof(op), typeof(range), typeof(_workspace)}(;
+        range = range, op = op, init = _init, workspace = _workspace, kw...)
 end
 
-@inline function reducer(::Type{T}, dims::AllDims, op = +;
+@inline function reducer(::Type{T}, range::AllDims, op = +;
         init = default_init(T, op)) where {T}
-    reducer(; type = T, dims = dims, op = op, init = init)
+    reducer(; type = T, range = range, op = op, init = init)
 end
 
 struct ReduceKernel1DND{T} end
@@ -137,11 +168,11 @@ function _parallel_reduce!(
 end
 
 @inline function (reducer::ParallelReduce)(f, x...)
-    _parallel_reduce!(reducer, reducer.dims, f, x...)
+    _parallel_reduce!(reducer, reducer.range, f, x...)
 end
 
 @inline function (reducer::ParallelReduce)(a::AbstractArray)
-    reducer(_elem_access(a), a)
+    reducer(elem_access, a)
 end
 
 function set_init!(reducer::ParallelReduce{B, T}, init) where {B, T}
@@ -168,17 +199,18 @@ end
     return parallel_reduce(f, dims, x...; kw...)
 end
 
-@inline function JACC.parallel_reduce(f, spec::LaunchSpec{TBackend},
-        dims::AllDims, x...; type = nothing, op = +,
-        init = nothing) where {TBackend}
+@inline function parallel_reduce(f, spec::LaunchSpec{TBackend}, dims::AllDims,
+        x...; type = nothing, op = +, init = nothing) where {TBackend}
     _init = _resolve_init_type(op, type, init)
-    reducer = ParallelReduce{TBackend, typeof(_init), typeof(op), typeof(dims)}(;
-        dims = dims,
+    _workspace = JACC.reduce_workspace(TBackend(), _init)
+    reducer = ParallelReduce{
+        TBackend, typeof(_init), typeof(op), typeof(dims), typeof(_workspace)}(;
+        range = dims,
         op = op,
         init = _init,
         stream = spec.stream,
         sync = spec.sync,
-        workspace = JACC.reduce_workspace(TBackend(), _init)
+        workspace = _workspace
     )
     reducer(f, x...)
     return reducer.workspace.ret
@@ -189,32 +221,56 @@ end
     return parallel_reduce(f, spec, dims, x...; kw...)
 end
 
-@inline function parallel_reduce(; dims::AllDims, f, args::Tuple,
-        type = nothing, op = +, init = nothing, kw...)
-    return parallel_reduce(f, launch_spec(; kw...), dims, args...; type = type,
+@inline function parallel_reduce(f, range::AbstractRange, x...; kw...)
+    parallel_reduce(_range_kernel, length(range), range, f, x...; kw...)
+end
+
+@inline function parallel_reduce(
+        f, range::NTuple{N, AbstractRange}, x...; kw...) where {N}
+    parallel_reduce(_RangesKernel{N}(), length.(range), range, f, x...; kw...)
+end
+
+@inline function parallel_reduce(f, spec::LaunchSpec{TBackend},
+        range::AbstractRange, x...; kw...) where {TBackend}
+    parallel_reduce(_range_kernel, spec, length(range), range, f, x...; kw...)
+end
+
+@inline function parallel_reduce(f, spec::LaunchSpec{TBackend},
+        range::NTuple{N, AbstractRange}, x...; kw...) where {TBackend, N}
+    parallel_reduce(_RangesKernel{N}(), spec, length.(range), range, f, x...; kw...)
+end
+
+@inline function parallel_reduce(; range::TR, f, args::Tuple,
+        type = nothing, op = +, init = nothing, kw...) where {TR}
+    return parallel_reduce(
+        f, launch_spec(; kw...), range, args...; type = type,
         op = op, init = init)
 end
 
 array_size(a::AbstractArray) = size(a)
 array_size(a::AbstractVector) = length(a)
 
-_elem_access(a::AbstractArray) = (args...) -> args[end][args[1:(end - 1)]...]
-_elem_access(a::AbstractArray{T, 3}) where {T} = (i, j, k, a) -> a[i, j, k]
-_elem_access(a::AbstractMatrix) = (i, j, a) -> a[i, j]
-_elem_access(a::AbstractVector) = (i, a) -> a[i]
+elem_access(i, a::AbstractVector) = a[i]
+elem_access(i, j, a::AbstractMatrix) = a[i, j]
+elem_access(i, j, k, a::AbstractArray{T, 3}) where {T} = a[i, j, k]
+elem_access(args...) = args[end][args[1:(end - 1)]...]
 
 @inline function parallel_reduce(
         op, a::AbstractArray; init = default_init(eltype(a), op))
     return parallel_reduce(
-        _elem_access(a), array_size(a), a; op = op, init = init)
+        elem_access, array_size(a), a; op = op, init = init)
 end
 
-@inline parallel_reduce(a::AbstractArray; kw...) = parallel_reduce(+, a)
+@inline parallel_reduce(a::AbstractArray; kw...) = parallel_reduce(+, a, kw...)
+
+# TODO: range version:
+# - `parallel_reduce(<r>, a)`
+# - `parallel_reduce(<r>, op, a)`
 
 @inline function parallel_reduce(spec::LaunchSpec, op, a::AbstractArray;
         init = default_init(eltype(a), op))
     return parallel_reduce(
-        _elem_access(a), spec, array_size(a), a; op = op, init = init)
+        elem_access, spec, array_size(a), a; op = op, init = init)
 end
 
 @inline function parallel_reduce(spec::LaunchSpec, a::AbstractArray)
@@ -222,5 +278,7 @@ end
 end
 
 include("threads/threads.jl")
+
+include("macro.jl")
 
 end # module JACC
