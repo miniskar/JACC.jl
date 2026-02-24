@@ -102,7 +102,7 @@ function JACC.parallel_for(f, ::CUDABackend, (M, N)::NTuple{2, Integer}, x...)
         y = attribute(dev, CUDA.DEVICE_ATTRIBUTE_MAX_GRID_DIM_Y)
     )
     if M < N && maxBlocks.x > maxBlocks.y
-        _parallel_for(BlockIndexerSwapped(), f, (N, M), (M, N), x...)
+        _parallel_for(BlockIndexerSwapped(), f, (N, M), (N, M), x...)
     else
         _parallel_for(BlockIndexerBasic(), f, (M, N), (M, N), x...)
     end
@@ -143,7 +143,7 @@ function JACC.parallel_for(
         y = attribute(dev, CUDA.DEVICE_ATTRIBUTE_MAX_GRID_DIM_Y)
     )
     if M < N && maxBlocks.x > maxBlocks.y
-        _parallel_for(BlockIndexerSwapped(), f, spec, (N, M), (M, N), x...)
+        _parallel_for(BlockIndexerSwapped(), f, spec, (N, M), (N, M), x...)
     else
         _parallel_for(BlockIndexerBasic(), f, spec, (M, N), (M, N), x...)
     end

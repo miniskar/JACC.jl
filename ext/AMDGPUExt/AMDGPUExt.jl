@@ -100,7 +100,7 @@ function JACC.parallel_for(
     props = AMDGPU.HIP.properties(dev)
     maxBlocks = (x = props.maxGridSize[1], y = props.maxGridSize[2])
     if M < N && maxBlocks.x > maxBlocks.y
-        _parallel_for(BlockIndexerSwapped(), f, (N, M), (M, N), x...)
+        _parallel_for(BlockIndexerSwapped(), f, (N, M), (N, M), x...)
     else
         _parallel_for(BlockIndexerBasic(), f, (M, N), (M, N), x...)
     end
@@ -140,7 +140,7 @@ function JACC.parallel_for(
     props = AMDGPU.HIP.properties(dev)
     maxBlocks = (x = props.maxGridSize[1], y = props.maxGridSize[2])
     if M < N && maxBlocks.x > maxBlocks.y
-        _parallel_for(BlockIndexerSwapped(), f, spec, (N, M), (M, N), x...)
+        _parallel_for(BlockIndexerSwapped(), f, spec, (N, M), (N, M), x...)
     else
         _parallel_for(BlockIndexerBasic(), f, spec, (M, N), (M, N), x...)
     end
@@ -225,11 +225,11 @@ function JACC._parallel_reduce!(reducer::JACC.ParallelReduce{AMDGPUBackend},
     init = reducer.init
 
     kernel1 = @roc launch=false _parallel_reduce_amdgpu(
-        N, op, wk.ret, f, x...)
+        N, op, wk.tmp, init, f, x...)
     config1 = AMDGPU.launch_configuration(kernel1)
     threads1 = config1.groupsize
 
-    kernel2 = @roc launch=false reduce_kernel_amdgpu(1, op, wk.ret, wk.ret)
+    kernel2 = @roc launch=false reduce_kernel_amdgpu(1, op, wk.tmp, init, wk.ret)
     config2 = AMDGPU.launch_configuration(kernel2)
     threads2 = config2.groupsize
 
@@ -237,13 +237,13 @@ function JACC._parallel_reduce!(reducer::JACC.ParallelReduce{AMDGPUBackend},
     blocks = cld(N, threads)
     shmem_size = threads * sizeof(init)
 
-    _init!(wk, blocks, init)
+    #_init!(wk, blocks, init)
 
-    kargs1 = kernel_args(N, op, wk.tmp, f, x...)
+    kargs1 = kernel_args(N, op, wk.tmp, init, f, x...)
     kernel1(kargs1...; groupsize = threads, gridsize = blocks,
         shmem = shmem_size, stream = reducer.stream)
 
-    kargs2 = kernel_args(blocks, op, wk.tmp, wk.ret)
+    kargs2 = kernel_args(blocks, op, wk.tmp, init, wk.ret)
     kernel2(kargs2...; groupsize = threads, gridsize = 1,
         shmem = shmem_size, stream = reducer.stream)
 
@@ -257,12 +257,12 @@ end
 function JACC.parallel_reduce(f, ::AMDGPUBackend, N::Integer, x...; op, init)
     ret_inst = AMDGPU.ROCArray{typeof(init)}(undef, 0)
     kernel1 = @roc launch=false _parallel_reduce_amdgpu(
-        N, op, ret_inst, f, x...)
+        N, op, ret_inst, init, f, x...)
     config1 = AMDGPU.launch_configuration(kernel1)
     threads1 = config1.groupsize
 
     rret = AMDGPU.ROCArray([init])
-    kernel2 = @roc launch=false reduce_kernel_amdgpu(1, op, ret_inst, rret)
+    kernel2 = @roc launch=false reduce_kernel_amdgpu(1, op, ret_inst, init, rret)
     config2 = AMDGPU.launch_configuration(kernel2)
     threads2 = config2.groupsize
 
@@ -273,10 +273,10 @@ function JACC.parallel_reduce(f, ::AMDGPUBackend, N::Integer, x...; op, init)
 
     ret = fill!(AMDGPU.ROCArray{typeof(init)}(undef, blocks), init)
 
-    kargs1 = kernel_args(N, op, ret, f, x...)
+    kargs1 = kernel_args(N, op, ret, init, f, x...)
     kernel1(kargs1...; groupsize = threads, gridsize = blocks, shmem = shmem_size)
 
-    kargs2 = kernel_args(blocks, op, ret, rret)
+    kargs2 = kernel_args(blocks, op, ret, init, rret)
     kernel2(kargs2...; groupsize = threads, gridsize = 1, shmem = shmem_size)
     AMDGPU.synchronize()
 
@@ -373,12 +373,12 @@ end
     return nothing
 end
 
-@inline function _parallel_reduce_amdgpu(N, op, ret, f, x...)
+@inline function _parallel_reduce_amdgpu(N, op, ret, init, f, x...)
     shmem_length = workgroupDim().x
     shared_mem = @ROCDynamicLocalArray(eltype(ret), shmem_length, false)
     i = (workgroupIdx().x - 1) * workgroupDim().x + workitemIdx().x
     ti = workitemIdx().x
-    @inbounds shared_mem[ti] = ret[workgroupIdx().x]
+    @inbounds shared_mem[ti] = init #ret[workgroupIdx().x]
 
     if i <= N
         tmp = @inline f(i, x...)
@@ -400,12 +400,12 @@ end
     return nothing
 end
 
-function reduce_kernel_amdgpu(N, op, red, ret)
+function reduce_kernel_amdgpu(N, op, red, init, ret)
     shmem_length = workgroupDim().x
     shared_mem = @ROCDynamicLocalArray(eltype(ret), shmem_length, false)
     i = workitemIdx().x
     ii = i
-    @inbounds tmp = ret[1]
+    @inbounds tmp = init #ret[1]
     for ii in i:shmem_length:N
         tmp = op(tmp, @inbounds red[ii])
     end
