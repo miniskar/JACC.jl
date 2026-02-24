@@ -223,23 +223,23 @@ function JACC._parallel_reduce!(reducer::JACC.ParallelReduce{CUDABackend},
     op = reducer.op
     init = reducer.init
 
-    kargs_1 = kernel_args(N, op, wk.ret, f, x...)
+    kargs_1 = kernel_args(N, op, wk.tmp, init, f, x...)
     kernel_1, maxThreads_1 = kernel_maxthreads(_parallel_reduce_cuda, kargs_1)
 
-    kargs_2 = kernel_args(1, op, wk.ret, wk.ret)
+    kargs_2 = kernel_args(1, op, wk.tmp, init, wk.ret)
     kernel_2, maxThreads_2 = kernel_maxthreads(reduce_kernel_cuda, kargs_2)
 
     threads = min(maxThreads_1, maxThreads_2, 512)
     blocks = cld(N, threads)
     shmem_size = threads * sizeof(init)
 
-    _init!(wk, blocks, init)
+    #_init!(wk, blocks, init)
 
-    kargs = kernel_args(N, op, wk.tmp, f, x...)
+    kargs = kernel_args(N, op, wk.tmp, init, f, x...)
     kernel_1(kargs...; threads = threads, blocks = blocks,
         shmem = shmem_size, stream = reducer.stream)
 
-    kargs = kernel_args(blocks, op, wk.tmp, wk.ret)
+    kargs = kernel_args(blocks, op, wk.tmp, init, wk.ret)
     kernel_2(kargs...; threads = threads, blocks = 1,
         shmem = shmem_size, stream = reducer.stream)
 
@@ -253,11 +253,11 @@ end
 function JACC.parallel_reduce(f, ::CUDABackend, N::Integer, x...; op, init)
     ret_inst = CUDA.CuArray{typeof(init)}(undef, 0)
 
-    kargs_1 = kernel_args(N, op, ret_inst, f, x...)
+    kargs_1 = kernel_args(N, op, ret_inst, init, f, x...)
     kernel_1, maxThreads_1 = kernel_maxthreads(_parallel_reduce_cuda, kargs_1)
 
     rret = CUDA.CuArray([init])
-    kargs_2 = kernel_args(1, op, ret_inst, rret)
+    kargs_2 = kernel_args(1, op, ret_inst, init, rret)
     kernel_2, maxThreads_2 = kernel_maxthreads(reduce_kernel_cuda, kargs_2)
 
     threads = min(maxThreads_1, maxThreads_2, 512)
@@ -266,10 +266,10 @@ function JACC.parallel_reduce(f, ::CUDABackend, N::Integer, x...; op, init)
     shmem_size = threads * sizeof(init)
 
     ret = fill!(CUDA.CuArray{typeof(init)}(undef, blocks), init)
-    kargs = kernel_args(N, op, ret, f, x...)
+    kargs = kernel_args(N, op, ret, init, f, x...)
     kernel_1(kargs...; threads = threads, blocks = blocks, shmem = shmem_size)
 
-    kargs = kernel_args(blocks, op, ret, rret)
+    kargs = kernel_args(blocks, op, ret, init, rret)
     kernel_2(kargs...; threads = threads, blocks = 1, shmem = shmem_size)
 
     CUDA.synchronize()
@@ -357,12 +357,12 @@ end
     return nothing
 end
 
-function _parallel_reduce_cuda(N, op, ret, f, x...)
+function _parallel_reduce_cuda(N, op, ret, init, f, x...)
     shmem_length = blockDim().x
     shared_mem = CuDynamicSharedArray(eltype(ret), shmem_length)
     i = (blockIdx().x - 1) * blockDim().x + threadIdx().x
     ti = threadIdx().x
-    @inbounds shared_mem[ti] = ret[blockIdx().x]
+    @inbounds shared_mem[ti] = init #ret[blockIdx().x]
 
     if i <= N
         tmp = @inline f(i, x...)
@@ -384,12 +384,12 @@ function _parallel_reduce_cuda(N, op, ret, f, x...)
     return nothing
 end
 
-function reduce_kernel_cuda(N, op, red, ret)
+function reduce_kernel_cuda(N, op, red, init, ret)
     shmem_length = blockDim().x
     shared_mem = CuDynamicSharedArray(eltype(ret), shmem_length)
     i = threadIdx().x
     ii = i
-    @inbounds tmp = ret[1]
+    @inbounds tmp = init #ret[1]
     for ii in i:shmem_length:N
         tmp = op(tmp, @inbounds red[ii])
     end
