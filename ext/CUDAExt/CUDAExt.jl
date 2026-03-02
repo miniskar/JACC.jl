@@ -127,7 +127,6 @@ function _parallel_for(indexer::TI, f, spec::LaunchSpec{CUDABackend}, (m, n),
     if spec.shmem_size < 0
         spec.shmem_size = max_shmem_size()
     end
-
     kernel(kargs...; threads = spec.threads, blocks = spec.blocks,
         shmem = spec.shmem_size, stream = spec.stream)
     if spec.sync
@@ -142,7 +141,7 @@ function JACC.parallel_for(
         x = attribute(dev, CUDA.DEVICE_ATTRIBUTE_MAX_GRID_DIM_X),
         y = attribute(dev, CUDA.DEVICE_ATTRIBUTE_MAX_GRID_DIM_Y)
     )
-    if M < N && maxBlocks.x > maxBlocks.y
+    if M < N && maxBlocks.x > maxBlocks.y && spec.threads == 0
         _parallel_for(BlockIndexerSwapped(), f, spec, (N, M), (N, M), x...)
     else
         _parallel_for(BlockIndexerBasic(), f, spec, (M, N), (M, N), x...)
