@@ -2,6 +2,7 @@ import AMDGPU
 
 @testset "TestBackend" begin
     @test JACC.backend == "amdgpu"
+    @test JACC.default_backend() == JACC.get_backend(JACC.Backend.amdgpu)
 end
 
 @testset "array_types" begin
@@ -56,6 +57,48 @@ end
     @test typeof(x) == ROCArray{Complex{Float32}, 3, HIPBuffer}
 end
 
+@testset "array_storage_preference" begin
+    using AMDGPU
+    import AMDGPU.Runtime.Mem: HIPBuffer, HostBuffer
+    using Suppressor
+    N = 10
+    h = ones(Float32, N)
+    x = JACC.array(h)
+    @test typeof(x) == ROCVector{Float32, HIPBuffer}
+    @test JACC.array(x) === x
+    @test JACC.array(JACC.default_backend(), x) === x
+    @test JACC.array(JACC.default_backend(), h) isa
+          ROCVector{Float32, HIPBuffer}
+    try
+        @suppress JACC.set_backend("AMDGPU"; storage = :host)
+        preferences = load_preference(JACC, "extension_preferences")
+        @test preferences["amdgpu"]["storage"] == "host"
+        @test JACC.Preferences.Backend._EXT_PREFS[]["amdgpu"] ==
+              Dict(:storage => :host)
+        xs = JACC.array(h)
+        @test typeof(xs) == ROCVector{Float32, HostBuffer}
+        @test Array(xs) == h
+        @test JACC.array(xs) === xs
+        @test JACC.array(JACC.default_backend(), xs) === xs
+        @test JACC.array(JACC.default_backend(), h) isa
+              ROCVector{Float32, HostBuffer}
+        h2 = ones(Float32, N, N)
+        xs2 = JACC.array(h2)
+        @test typeof(xs2) == ROCMatrix{Float32, HostBuffer}
+        # host-pinned arrays must be usable from kernels (zero-copy path)
+        JACC.parallel_for(N, (i, a) -> (a[i] += 1f0), xs)
+        @test Array(xs) == h .+ 1f0
+    finally
+        @suppress JACC.set_backend("AMDGPU"; storage = :device)
+    end
+    @test JACC.array(h) isa ROCVector{Float32, HIPBuffer}
+    @suppress JACC.set_backend("AMDGPU"; storage = :bogus)
+    @test_throws ArgumentError JACC.array(h)
+    @suppress JACC.set_backend("AMDGPU"; storage = 1)
+    @test_throws ArgumentError JACC.array(h)
+    @suppress JACC.set_backend("AMDGPU"; storage = :device)
+end
+
 @testset "stream" begin
     using AMDGPU
     sd1 = JACC.default_stream()
@@ -67,4 +110,10 @@ end
     @test s1 != sd1
     s2 = JACC.create_stream()
     @test s2 != s1
+end
+
+include("preferences.jl")
+
+@testset "preferences" begin
+    test_preferences(:AMDGPU)
 end

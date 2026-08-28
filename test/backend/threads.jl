@@ -1,6 +1,7 @@
 
 @testset "TestBackend" begin
     @test JACC.backend == "threads"
+    @test JACC.default_backend() == JACC.get_backend(JACC.Backend.threads)
 end
 
 @testset "array_types" begin
@@ -49,4 +50,14 @@ end
     @test typeof(x) == Vector{Int}
     x = JACC.array(; type = Complex{Float32}, dims = (5, 5, 5))
     @test typeof(x) == Array{Complex{Float32}, 3}
+end
+
+@testset "array_storage_unsupported" begin
+    @test_throws MethodError JACC.array(ones(Float32, 10); storage = :shared)
+end
+
+include("preferences.jl")
+
+@testset "preferences" begin
+    test_preferences(:Threads)
 end

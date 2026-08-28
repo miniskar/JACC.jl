@@ -2,6 +2,7 @@ import CUDA
 
 @testset "TestBackend" begin
     @test JACC.backend == "cuda"
+    @test JACC.default_backend() == JACC.get_backend(JACC.Backend.cuda)
 end
 
 @testset "array_types" begin
@@ -65,4 +66,10 @@ end
     @test s1 != sd1
     s2 = JACC.create_stream()
     @test s2 != s1
+end
+
+include("preferences.jl")
+
+@testset "preferences" begin
+    test_preferences(:CUDA)
 end

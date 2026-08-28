@@ -5,9 +5,9 @@ function axpy_threads(SIZE::Integer, alpha, x, y)
     end
 end
 
-function axpy_threads((SIZE, SIZE)::NTuple{2, Integer}, alpha, x, y)
-    Threads.@threads for j in 1:SIZE
-        for i in 1:SIZE
+function axpy_threads((M, N)::NTuple{2, Integer}, alpha, x, y)
+    Threads.@threads for j in 1:N
+        for i in 1:M
             axpy(i, j, alpha, x, y)
         end
     end

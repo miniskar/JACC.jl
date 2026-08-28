@@ -6,32 +6,31 @@ function _notify_add(backend::AbstractString)
     @info "Added $backend (be careful about committing Project.toml)"
 end
 
-const proj = Pkg.Types.read_project(Pkg.Types.find_project_file())
+proj() = Pkg.Types.read_project(Pkg.Types.find_project_file())
 
 function _check_install_backend(backend, backend_lc)
     # Check original placement
     place_dict = Preferences.Backend._PLACE[]
     if !haskey(place_dict, backend_lc)
-        if haskey(proj.deps, backend)
+        if haskey(proj().deps, backend)
             place_dict[backend_lc] = "deps"
-        elseif haskey(proj.weakdeps, backend)
+        elseif haskey(proj().weakdeps, backend)
             place_dict[backend_lc] = "weakdeps"
         else
             place_dict[backend_lc] = "none"
         end
     end
 
-    if !haskey(proj.deps, backend)
+    if !haskey(proj().deps, backend)
         Pkg.add(backend)
         _notify_add(backend)
     end
 end
 
 function _check_install_backend(backend::AbstractString)
-    match = filter(
-        b -> backend == lowercase(b), ["CUDA", "AMDGPU", "oneAPI", "Metal"])
-    if !isempty(match)
-        _check_install_backend(match[], backend)
+    pkgname = get_package_name(backend)
+    if pkgname != nothing
+        _check_install_backend(pkgname, backend)
     end
 end
 
@@ -42,7 +41,7 @@ function _notify_rm(backend::AbstractString)
 end
 
 function _check_uninstall_backend(backend, backend_lc)
-    if haskey(proj.deps, backend)
+    if haskey(proj().deps, backend)
         place_dict = Preferences.Backend._PLACE[]
         if haskey(place_dict, backend_lc)
             if place_dict[backend_lc] != "deps"
@@ -58,16 +57,21 @@ function _check_uninstall_backend(backend, backend_lc)
 end
 
 function _uninstall_backend(backend::AbstractString)
-    match = filter(
-        b -> backend == lowercase(b), ["CUDA", "AMDGPU", "oneAPI", "Metal"])
-    if !isempty(match)
-        _check_uninstall_backend(match[], backend)
+    pkgname = get_package_name(backend)
+    if pkgname != nothing
+        _check_uninstall_backend(pkgname, backend)
     end
 end
 
 _uninstall_backends() = _uninstall_backend.(Preferences.Backend._LIST[])
 
 const supported_backends = ("threads", "cuda", "amdgpu", "oneapi", "metal")
+
+function _check_supported(backend::AbstractString)
+    if lowercase(backend) ∉ supported_backends
+        throw(ArgumentError("Invalid backend: \"$(backend)\""))
+    end
+end
 
 baremodule Backend
 const threads = :threads
@@ -87,8 +91,37 @@ const _DEFAULT = Ref(String(default))
 const list = @load_preference("backends", ["threads"])
 const _LIST = Ref(deepcopy(list))
 const _PLACE = Ref(@load_preference("placement", Dict{String, String}()))
+const extension_preferences = @load_preference(
+    "extension_preferences", Dict{String, Any}())
 
-function backend_import(backend::String)
+_serialize_extension_preference(value::Symbol) = String(value)
+function _serialize_extension_preference(value::AbstractDict)
+    return Dict(
+        String(key) => _serialize_extension_preference(item)
+        for (key, item) in value)
+end
+function _serialize_extension_preference(value::Union{Tuple, AbstractVector})
+    return [_serialize_extension_preference(item) for item in value]
+end
+_serialize_extension_preference(value) = value
+
+function _runtime_extension_preferences(preferences)
+    return Dict{String, Dict{Symbol, Any}}(
+        String(backend) => Dict{Symbol, Any}(
+            Symbol(key) => value
+            for (key, value) in values)
+        for (backend, values) in preferences)
+end
+
+const _EXT_PREFS = Ref(_runtime_extension_preferences(extension_preferences))
+# Bumped on every mutation of _EXT_PREFS so extensions can cheaply detect
+# staleness of any value they cache from it, without recomputing on every
+# call. See ext/MetalExt/MetalExt.jl `_array_storage` for the reader side.
+const _EXT_PREFS_GENERATION = Ref(0)
+
+const package_names = ["CUDA", "AMDGPU", "oneAPI", "Metal"]
+
+function _backend_import(backend::String)
     backend == "cuda" && return quote
         import CUDA
         @info "CUDA backend loaded"
@@ -110,13 +143,21 @@ function backend_import(backend::String)
     end
 end
 
-const imports = Expr(:block, backend_import.(list)...)
+const imports = Expr(:block, _backend_import.(list)...)
 
 end
 end
 
 const backend = Preferences.Backend.default
 const _backend_dispatchable = Val{Symbol(backend)}()
+
+function get_package_name(backend::AbstractString)
+    match = filter(
+        b -> backend == lowercase(b), Preferences.Backend.package_names)
+    return isempty(match) ? nothing : match[]
+end
+
+get_package_name(backend::Symbol) = get_package_name(String(backend))
 
 function unset_backend()
     _uninstall_backends()
@@ -126,6 +167,9 @@ function unset_backend()
     @delete_preferences!("default_backend")
     @delete_preferences!("backends")
     @delete_preferences!("placement")
+    @delete_preferences!("extension_preferences")
+    empty!(Preferences.Backend._EXT_PREFS[])
+    Preferences.Backend._EXT_PREFS_GENERATION[] += 1
     @info """
         Backend preferences deleted
         Restart your Julia session for this change to take effect!
@@ -138,9 +182,7 @@ function set_default_backend(new_backend::AbstractString)
         return
     end
 
-    if new_backend_lc ∉ supported_backends
-        throw(ArgumentError("Invalid backend: \"$(new_backend)\""))
-    end
+    _check_supported(new_backend)
 
     # Set it in our runtime values, as well as saving it to disk
     if new_backend_lc ∉ Preferences.Backend._LIST[]
@@ -159,15 +201,37 @@ function set_default_backend(new_backend::Symbol)
     set_default_backend(String(new_backend))
 end
 
-function set_backend(b::AbstractString)
-    if Preferences.Backend._LIST[] == [b]
-        return
-    end
-    unset_backend()
-    set_default_backend(b)
+function _set_extension_preferences(backend::String, kw)
+    values = Dict{Symbol, Any}(pairs((; kw...)))
+    isempty(values) && return
+
+    preferences = deepcopy(Preferences.Backend._EXT_PREFS[])
+    preferences[backend] = values
+    serialize = Preferences.Backend._serialize_extension_preference
+    persisted = Dict(
+        name => serialize(settings)
+        for (name, settings) in preferences)
+    @set_preferences!("extension_preferences"=>persisted)
+    Preferences.Backend._EXT_PREFS[] = preferences
+    Preferences.Backend._EXT_PREFS_GENERATION[] += 1
 end
 
-set_backend(b::Symbol) = set_backend(String(b))
+function set_backend(b::AbstractString; kw...)
+    nb = lowercase(b)
+    if Preferences.Backend._LIST[] == [nb]
+        if Preferences.Backend._DEFAULT[] == nb
+            _set_extension_preferences(nb, kw)
+            return
+        end
+    else
+        _check_supported(nb)
+        unset_backend()
+    end
+    set_default_backend(nb)
+    _set_extension_preferences(nb, kw)
+end
+
+set_backend(b::Symbol; kw...) = set_backend(String(b); kw...)
 
 function add_backend(new_backend::AbstractString)
     new_backend_lc = lowercase(new_backend)
@@ -176,9 +240,7 @@ function add_backend(new_backend::AbstractString)
         return
     end
 
-    if new_backend_lc ∉ supported_backends
-        throw(ArgumentError("Invalid backend: \"$(new_backend)\""))
-    end
+    _check_supported(new_backend)
 
     Preferences.Backend._LIST[] = vcat(backend_list, [new_backend_lc])
     @set_preferences!("backends"=>Preferences.Backend._LIST[])
@@ -228,7 +290,7 @@ macro init_backends()
 end
 
 function _init_backend()
-    JACC.Preferences.Backend.backend_import(JACC.Preferences.Backend.default)
+    JACC.Preferences.Backend._backend_import(JACC.Preferences.Backend.default)
 end
 
 macro init_backend()

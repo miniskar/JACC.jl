@@ -31,10 +31,10 @@ end
 
 macro parallel_for(args...)
     esc(_construct_call(JACC.parallel_for,
-        [:range, :threads, :blocks, :shmem_size, :stream, :sync], args...))
+        [:range, :name, :threads, :blocks, :shmem_size, :stream, :sync], args...))
 end
 
 macro parallel_reduce(args...)
     esc(_construct_call(JACC.parallel_reduce,
-        [:range, :type, :op, :init, :stream, :sync], args...))
+        [:range, :name, :type, :op, :init, :stream, :sync], args...))
 end

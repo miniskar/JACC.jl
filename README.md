@@ -7,41 +7,52 @@
 [![ci-gpu-NVIDIA](https://github.com/JuliaGPU/JACC.jl/actions/workflows/ci-gpu-NVIDIA.yaml/badge.svg)](https://github.com/JuliaGPU/JACC.jl/actions/workflows/ci-gpu-NVIDIA.yaml)
 [![ci-gpu-AMD](https://github.com/JuliaGPU/JACC.jl/actions/workflows/ci-gpu-AMD.yaml/badge.svg)](https://github.com/JuliaGPU/JACC.jl/actions/workflows/ci-gpu-AMD.yaml)
 [![ci-gpu-Apple](https://github.com/JuliaGPU/JACC.jl/actions/workflows/ci-gpu-Apple.yaml/badge.svg)](https://github.com/JuliaGPU/JACC.jl/actions/workflows/ci-gpu-Apple.yaml)
+[![ci-gpu-Intel](https://github.com/JuliaGPU/JACC.jl/actions/workflows/ci-gpu-Intel.yaml/badge.svg)](https://github.com/JuliaGPU/JACC.jl/actions/workflows/ci-gpu-Intel.yaml)
+[![codecov](https://codecov.io/github/JuliaGPU/JACC.jl/graph/badge.svg?token=u4Td0r52ng)](https://codecov.io/github/JuliaGPU/JACC.jl)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![GitHub release](https://img.shields.io/github/release/JuliaGPU/JACC.jl/all.svg)](https://github.com/JuliaGPU/JACC.jl/releases)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/12117/badge)](https://www.bestpractices.dev/projects/12117)
+
+
+<img src="./docs/src/assets/jacc-metal.gif" width="95%" height="650"/>
+
+*JACC.jl on Apple M3 GPU* [source](./docs/src/assets/jacc-replay.jl)
 
 
 CPU/GPU portable `array`/`parallel_for`/`parallel_reduce` in Julia for productive science.
 
-JACC.jl leverages the LLVM-based Julia language and ecosystem, in particular [JuliaGPU](https://juliagpu.org/), and [optional package
-extensions](https://julialang.org/blog/2023/04/julia-1.9-highlights/#package_extensions). Similar to portable layers like Kokkos or SYCL in C++, Julia users will have easy access to vendor-neutral CPU/GPU computing writing a single high-level source code, but in a language like Julia designed for science. 
+JACC.jl leverages the LLVM-compiled Julia language and ecosystem, in particular [JuliaGPU](https://juliagpu.org/), and [optional package
+extensions](https://julialang.org/blog/2023/04/julia-1.9-highlights/#package_extensions). Similar to portable layers like Kokkos, RAJA, or SYCL in C++, Julia users will have easy access to vendor-neutral CPU/GPU computing writing a single 100% portable high-level source code, but in a language like Julia designed for science. 
 
 JACC.jl programming model provides:
   
-  1. Portable `array`, `zeros`, `ones`, `fill` metaprogramming for the selected vendor backend (`CuArray`. `ROCArray`, `MtlArray`, etc.).
+  1. Unified and portable `array`, `zeros`, `ones`, `fill` allocation via metaprogramming for the selected vendor backend (`CuArray`. `ROCArray`, `oneArray`, `MtlArray`, etc.).
 
-  2. `parallel_for` and `parallel_reduce` kernel launching: (i) basic APIs for non-experts, and (ii) low-level control APIs for threads/blocks, synchronization, multi GPU, and shared memory usage.
+  2. `parallel_for` and `parallel_reduce` kernel launching: (i) basic high-level APIs for quick CPU/GPU parallelization access, and (ii) low-level APIs for threads/blocks, synchronization, multi GPU, streams, and shared memory usage.
 
-  3. Backend selection using Preferences.jl: `"threads"` (default), `"cuda"`, `"amdgpu"`, `"metal"` and `"oneAPI"`. Stored in Julia's `LocalPreferences.toml`, so code is 100% vendor-agnostic via `@init_backend`.
+  3. Backend selection using Preferences.jl: `"threads"` (default), `"cuda"`, `"amdgpu"`, `"metal"` and `"oneAPI"`. Stored in Julia's `LocalPreferences.toml`, so **code is 100% vendor-agnostic** via `import JACC; JACC.@init_backend`.
 
 ## Goals
-  1. JACC.jl provides easy access to GPU computing in Julia without having to learn the details of each backend or CPU/GPU parallel programming.
+  1. JACC.jl provides easy access to vendor-neutral parallel computing in Julia without having to learn the vendor-specific details of each backend or CPU/GPU parallel programming or extra code annotations. Developers can write and test CPU/GPU kernels interactively on their laptops or desktops, and deploy on multiple high-performance computing (HPC) platforms.
 
   2. Julia HPC developers can use JACC.jl as a productive meta-programming layer that adds and communicates use-case and testing coverage to the ever-growing JuliaGPU ecosystem.
 
-  3. As a platform to advace research in portable parallel programming, e.g. [shared memory](https://ieeexplore.ieee.org/document/10938453), [multi-GPU](https://ieeexplore.ieee.org/document/11181490), [for science facilities](https://ieeexplore.ieee.org/document/10820586), etc.
+  3. As a platform to advance research in portable parallel programming systems, e.g. [shared memory](https://ieeexplore.ieee.org/document/10938453), [multi-GPU](https://ieeexplore.ieee.org/document/11181490), [for science experimental facilities](https://ieeexplore.ieee.org/document/10820586), etc.
 
 ## Support and Roadmap
 
 Julia provides a tight, interoperable ecosystem for GPU programming. Still, vendor support of some features may vary. The following table summarizes the current support status of JACC.jl features across different backends.
 
 
-| Feature \ Backend | CPU                 | CUDA              | AMDGPU | Metal | oneAPI            |
-| ----------------- | ------------------- | ----------------- | ------ | ----- | ----------------- |
-| CI                | ✅                   | ✅                 | ✅      | ✅     | TBD               |
-|                   | x86, Arm GH Runners | RTXA4000, GTX1080 | MI100  | M1    | TBD               |
-| Float64           | ✅                   | ✅                 | ✅      | ❌     | ✅  (if supported) |
-| `Multi` (GPU)     | N/A                 | ✅                 | ❌      | ❌     | ❌                 |
-| `shared`          | N/A                 | ✅                 | ✅      | ✅     | ✅                 |
-| `@atomic`         | ✅                   | ✅                 | ✅      | ✅     | ✅                 |
+| Feature \ Backend     | CPU                 | CUDA              | AMDGPU | Metal | oneAPI            |
+| --------------------- | ------------------- | ----------------- | ------ | ----- | ----------------- |
+| CI                    | ✅                   | ✅                 | ✅      | ✅     | TBD               |
+|                       | x86-64, Arm GH Runners | RTXA4000, GTX1080 | MI100, MI300A  | M1    | A770              |
+| Float64               | ✅                   | ✅                 | ✅      | ❌     | ✅  (if supported) |
+| `Multi` (GPU)         | N/A                 | ✅                 | ✅      | ❌     | ✅                 |
+| `shared`              | N/A                 | ✅                 | ✅      | ✅     | ✅                 |
+| `@atomic`             | ✅                   | ✅                 | ✅      | ✅     | ✅                 |
+| use `rand` in kernels | ✅                   | ✅                 | ✅      | ✅     | ❌                 |
 
 Roadmap:
 
@@ -51,22 +62,29 @@ Roadmap:
 
 ## Quick start
 
-1. JACC.jl is a registered Julia package. Install JACC.jl like any other Julia package:
+1. JACC.jl is a registered Julia package. Install JACC.jl using the Julia package manager:
 
     ```julia
     $ julia
     julia> import Pkg
     julia> Pkg.add("JACC")
     ```
+    or 
+    
+    ```julia
+    julia> using JACC
+    julia> ] 
+    (tmp) pkg> add JACC
+    ```
 
-2. Set a backend (outside code): `"cuda"`, `"amdgpu"`, or `"threads"` (default). This will generate a `LocalPreferences.toml` file.
+2. Set a backend (outside code): `"cuda"`, `"amdgpu"`, `"metal"`, `"oneapi"`, or `"threads"` (default). This will generate a `LocalPreferences.toml` file.
 
     ```julia
     julia> import JACC
     julia> JACC.set_backend("cuda")
     ```
     **NOTE:** This will also add the backend package (`CUDA.jl` in this case)
-    as a dependency to the current project.
+    as a dependency to the current project in Project.toml. Users can clean this using `unset_backend`.
 
 3. Import JACC and load appropriate extension. `@init_backend` inserts an `import` statement so that you don't have to reference a specific backend in your code. (It must therefore be called at a top-level scope.)
 
@@ -106,7 +124,8 @@ Roadmap:
     The first time it will take a while to download and precompile backend dependency packages.
 
     **NOTE:** `JACC.array` converts a `Base.Array` to the array type used by the current backend. If you need to use the array type in your code (for example as function parameter or in a struct, use `JACC.array_type()`:
-    ```julia
+
+   ```julia
     const JACCArray = JACC.array_type()
     function f(a::JACCArray{Float32, 1})
         # ...
@@ -122,7 +141,7 @@ Roadmap:
 - SC24 JACC [Best Research Poster Finalist](https://sc24.supercomputing.org/proceedings/poster/poster_pages/post113.html)
 - SC24 WACCPD [presentation](https://sc24.conference-program.com/presentation/?id=ws_waccpd101&sess=sess760)
   and [paper](https://conferences.computer.org/sc-wpub/pdfs/SC-W2024-6oZmigAQfgJ1GhPL0yE3pS/555400b955/555400b955.pdf)
-- MiniVATES.jl proxy application [repository](https://github.com/JuliaORNL/MiniVATES.jl)
+- The MiniVATES.jl proxy application [repository](https://github.com/JuliaORNL/MiniVATES.jl)
   and SC24 XLOOP [best paper using JACC.jl](https://conferences.computer.org/sc-wpub/pdfs/SC-W2024-6oZmigAQfgJ1GhPL0yE3pS/555400c107/555400c107.pdf)
 - [OLCF Tutorial 2025](https://www.olcf.ornl.gov/calendar/juliaforsci2025/)
 - Examples of [science kernels using JACC.jl](https://github.com/JuliaORNL/JACC-applications)

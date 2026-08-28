@@ -23,16 +23,24 @@ function dummy() end
     return max_threads
 end
 
-function JACC.parallel_for(f, ::MetalBackend, N::Integer, x...)
+@inline function _launch(::Nothing, threads, groups, f, args...)
+    @metal threads=threads groups=groups f(args...)
+end
+
+@inline function _launch(kname::AbstractString, threads, groups, f, args...)
+    @metal name=kname threads=threads groups=groups f(args...)
+end
+
+function JACC.parallel_for(f, ::MetalBackend, N::Integer, x...; name = nothing)
     max_threads_per_group = _kernel_maxthreads(N, f, x)
     threads = min(N, max_threads_per_group)
     groups = cld(N, threads)
-    @metal threads=threads groups=groups _parallel_for_metal(N, f, x...)
+    _launch(name, threads, groups, _parallel_for_metal, N, f, x...)
     Metal.synchronize()
 end
 
 function JACC.parallel_for(
-        f, ::MetalBackend, (M, N)::NTuple{2, Integer}, x...)
+        f, ::MetalBackend, (M, N)::NTuple{2, Integer}, x...; name = nothing)
     maxItems = 32
     Mthreads = min(M, maxItems)
     Nthreads = min(N, maxItems)
@@ -41,12 +49,12 @@ function JACC.parallel_for(
     Nblocks = cld(N, threads[2])
     blocks = (Mblocks, Nblocks)
 
-    Metal.@sync @metal threads=threads groups=blocks _parallel_for_metal_MN(
-        M, N, f, x...)
+    _launch(name, threads, blocks, _parallel_for_metal_MN, M, N, f, x...)
+    Metal.synchronize()
 end
 
 function JACC.parallel_for(
-        f, ::MetalBackend, (L, M, N)::NTuple{3, Integer}, x...)
+        f, ::MetalBackend, (L, M, N)::NTuple{3, Integer}, x...; name = nothing)
     maxItems = 32
     Lthreads = min(L, maxItems)
     Mthreads = min(M, maxItems)
@@ -57,12 +65,12 @@ function JACC.parallel_for(
     Nblocks = cld(N, threads[3])
     blocks = (Lblocks, Mblocks, Nblocks)
 
-    Metal.@sync @metal threads=threads groups=blocks _parallel_for_metal_LMN(
-        L, M, N, f, x...)
+    _launch(name, threads, blocks, _parallel_for_metal_LMN, L, M, N, f, x...)
+    Metal.synchronize()
 end
 
 function JACC.parallel_for(
-        f, spec::LaunchSpec{MetalBackend}, N::Integer, x...)
+        f, spec::LaunchSpec{MetalBackend}, N::Integer, x...; name = nothing)
     max_threads_per_group = _kernel_maxthreads(N, f, x)
     if spec.threads == 0
         maxItems = max_threads_per_group
@@ -72,8 +80,7 @@ function JACC.parallel_for(
         spec.blocks = cld(N, spec.threads)
     end
 
-    @metal threads=spec.threads groups=spec.blocks _parallel_for_metal(
-        N, f, x...)
+    _launch(name, spec.threads, spec.blocks, _parallel_for_metal, N, f, x...)
 
     if spec.sync
         Metal.synchronize()
@@ -81,7 +88,8 @@ function JACC.parallel_for(
 end
 
 function JACC.parallel_for(
-        f, spec::LaunchSpec{MetalBackend}, (M, N)::NTuple{2, Integer}, x...)
+        f, spec::LaunchSpec{MetalBackend}, (M, N)::NTuple{2, Integer}, x...;
+        name = nothing)
     if spec.threads == 0
         maxItems = 32
         Mthreads = min(M, maxItems)
@@ -94,8 +102,8 @@ function JACC.parallel_for(
         spec.blocks = (Mblocks, Nblocks)
     end
 
-    @metal threads=spec.threads groups=spec.blocks _parallel_for_metal_MN(
-        M, N, f, x...)
+    _launch(
+        name, spec.threads, spec.blocks, _parallel_for_metal_MN, M, N, f, x...)
 
     if spec.sync
         Metal.synchronize()
@@ -103,7 +111,8 @@ function JACC.parallel_for(
 end
 
 function JACC.parallel_for(
-        f, spec::LaunchSpec{MetalBackend}, (L, M, N)::NTuple{3, Integer}, x...)
+        f, spec::LaunchSpec{MetalBackend}, (L, M, N)::NTuple{3, Integer}, x...;
+        name = nothing)
     if spec.threads == 0
         maxItems = 32
         Lthreads = min(L, maxItems)
@@ -118,6 +127,8 @@ function JACC.parallel_for(
         spec.blocks = (Lblocks, Mblocks, Nblocks)
     end
 
+    _launch(name, spec.threads, spec.blocks,
+        _parallel_for_metal_LMN, L, M, N, f, x...)
     @metal threads=spec.threads groups=spec.blocks _parallel_for_metal_LMN(
         L, M, N, f, x...)
 
@@ -159,8 +170,11 @@ end
 
 JACC.get_result(wk::MetalReduceWorkspace) = Base.Array(wk.ret)[]
 
+_make_kname(base::AbstractString, sfx::AbstractString) = base * "__" * sfx
+_make_kname(::Nothing, ::AbstractString) = nothing
+
 function JACC._parallel_reduce!(reducer::JACC.ParallelReduce{MetalBackend},
-        N::Integer, f, x...)
+        N::Integer, f, x...; name = nothing)
     wk = reducer.workspace
     op = reducer.op
     init = reducer.init
@@ -171,9 +185,9 @@ function JACC._parallel_reduce!(reducer::JACC.ParallelReduce{MetalBackend},
 
     _init!(wk, groups, init)
 
-    @metal threads=items groups=groups _parallel_reduce_metal(
-        Val(items), N, op, wk.tmp, f, x...)
-    @metal threads=items groups=1 reduce_kernel_metal(
+    _launch(_make_kname(name, "block_reduce"), items, groups,
+        _parallel_reduce_metal, Val(items), N, op, wk.tmp, f, x...)
+    _launch(_make_kname(name, "grid_reduce"), items, 1, reduce_kernel_metal,
         Val(items), groups, op, wk.tmp, wk.ret)
 
     if reducer.sync
@@ -183,20 +197,22 @@ function JACC._parallel_reduce!(reducer::JACC.ParallelReduce{MetalBackend},
     return nothing
 end
 
-function JACC.parallel_reduce(f, ::MetalBackend, N::Integer, x...; op, init)
+function JACC.parallel_reduce(f, ::MetalBackend, N::Integer, x...; op, init,
+        name = nothing)
     items = _kernel_maxthreads(N, f, x)
     groups = cld(N, items)
     ret = fill!(Metal.MtlArray{typeof(init)}(undef, groups), init)
     rret = Metal.MtlArray([init])
-    Metal.@sync @metal threads=items groups=groups _parallel_reduce_metal(
-        Val(items), N, op, ret, f, x...)
-    Metal.@sync @metal threads=items groups=1 reduce_kernel_metal(
+    _launch(_make_kname(name, "block_reduce"), items, groups,
+        _parallel_reduce_metal, Val(items), N, op, ret, f, x...)
+    _launch(_make_kname(name, "grid_reduce"), items, 1, reduce_kernel_metal,
         Val(items), groups, op, ret, rret)
+    Metal.synchronize()
     return Base.Array(rret)[]
 end
 
 function JACC._parallel_reduce!(reducer::JACC.ParallelReduce{MetalBackend},
-        (M, N)::NTuple{2, Integer}, f, x...)
+        (M, N)::NTuple{2, Integer}, f, x...; name = nothing)
     init = reducer.init
     numItems = 16
     Mitems = numItems
@@ -209,10 +225,10 @@ function JACC._parallel_reduce!(reducer::JACC.ParallelReduce{MetalBackend},
     wk = reducer.workspace
     _init!(wk, blocks, init)
 
-    @metal threads=threads groups=blocks _parallel_reduce_metal_MN(
-        (M, N), reducer.op, wk.tmp, f, x...)
-    @metal threads=threads groups=(1, 1) reduce_kernel_metal_MN(
-        blocks, reducer.op, wk.tmp, wk.ret)
+    _launch(_make_kname(name, "block_reduce"), threads, blocks,
+        _parallel_reduce_metal_MN, (M, N), reducer.op, wk.tmp, f, x...)
+    _launch(_make_kname(name, "grid_reduce"), threads, (1, 1),
+        reduce_kernel_metal_MN, blocks, reducer.op, wk.tmp, wk.ret)
 
     if reducer.sync
         Metal.synchronize()
@@ -222,7 +238,7 @@ function JACC._parallel_reduce!(reducer::JACC.ParallelReduce{MetalBackend},
 end
 
 function JACC.parallel_reduce(f, ::MetalBackend, (M, N)::NTuple{2, Integer},
-        x...; op, init)
+        x...; op, init, name = nothing)
     numItems = 16
     Mitems = numItems
     Nitems = numItems
@@ -232,20 +248,22 @@ function JACC.parallel_reduce(f, ::MetalBackend, (M, N)::NTuple{2, Integer},
     groups = (Mgroups, Ngroups)
     ret = fill!(Metal.MtlArray{typeof(init)}(undef, (Mgroups, Ngroups)), init)
     rret = Metal.MtlArray([init])
-    Metal.@sync @metal threads=items groups=groups _parallel_reduce_metal_MN(
-        (M, N), op, ret, f, x...)
-    Metal.@sync @metal threads=items groups=(1, 1) reduce_kernel_metal_MN(
-        groups, op, ret, rret)
+    _launch(_make_kname(name, "block_reduce"), items, groups,
+        _parallel_reduce_metal_MN, (M, N), op, ret, f, x...)
+    _launch(_make_kname(name, "grid_reduce"), items, (1, 1),
+        reduce_kernel_metal_MN, groups, op, ret, rret)
+    Metal.synchronize()
     return Base.Array(rret)[]
 end
 
 @inline function JACC.parallel_reduce(f, ::MetalBackend,
-        dims::NTuple{N, Integer}, x...; op, init) where {N}
+        dims::NTuple{N, Integer}, x...; op, init, kw...) where {N}
     ids = CartesianIndices(dims)
     return JACC.parallel_reduce(JACC.ReduceKernel1DND{typeof(init)}(),
-        prod(dims), ids, f, x...; op = op, init = init)
+        prod(dims), ids, f, x...; op = op, init = init, kw...)
 end
 
+# COV_EXCL_START
 function _parallel_reduce_metal(
         ::Val{shmem_length}, N, op, ret, f, x...) where {shmem_length}
     shared_mem = MtlThreadGroupArray(eltype(ret), shmem_length)
@@ -392,6 +410,7 @@ function _parallel_for_metal_LMN(L, M, N, f, x...)
     f(i, j, k, x...)
     return nothing
 end
+# COV_EXCL_STOP
 
 function JACC.default_float(::MetalBackend)
     return Float32
@@ -407,6 +426,49 @@ JACC.sync_workgroup(::MetalBackend) = Metal.threadgroup_barrier()
 
 JACC.array_type(::MetalBackend) = Metal.MtlArray
 
-JACC.array(::MetalBackend, x::Base.Array) = Metal.MtlArray(x)
+function _compute_array_storage()
+    preferences = get(
+        JACC.Preferences.Backend._EXT_PREFS[], "metal", Dict{Symbol, Any}())
+    value = get(preferences, :storage, "private")
+    value isa Union{AbstractString, Symbol} || throw(ArgumentError(
+        "Invalid Metal array storage: $(repr(value)); " *
+        "expected :private or :shared"))
+    storage = lowercase(String(value))
+    storage in ("private", "shared") || throw(ArgumentError(
+        "Invalid Metal array storage: $(repr(value)); " *
+        "expected :private or :shared"))
+    return storage
+end
+
+# Cached module global rather than a plain module-load-once value: `storage`
+# is one of the extension preferences `set_backend` is documented (and
+# tested, see array_storage_preference in test/backend/metal.jl) to apply
+# live within the same Julia session, without a restart. _EXT_PREFS_GENERATION
+# is bumped on every write, so this stays a cheap Int comparison on the
+# array-allocation hot path instead of a Dict lookup plus revalidation on
+# every call, while still tracking live changes.
+const _ARRAY_STORAGE_CACHE = Ref{Tuple{Int, String}}((-1, ""))
+
+function _array_storage()
+    generation = JACC.Preferences.Backend._EXT_PREFS_GENERATION[]
+    cached_generation, cached_value = _ARRAY_STORAGE_CACHE[]
+    if cached_generation == generation
+        return cached_value
+    end
+    value = _compute_array_storage()
+    _ARRAY_STORAGE_CACHE[] = (generation, value)
+    return value
+end
+
+function JACC._array(::MetalBackend, x::AbstractArray)
+    if _array_storage() == "shared"
+        return Metal.MtlArray{eltype(x), ndims(x), Metal.SharedStorage}(x)
+    end
+    return Metal.MtlArray{eltype(x), ndims(x), Metal.PrivateStorage}(x)
+end
+
+JACC._array(::MetalBackend, x::Metal.MtlArray) = x
+JACC.array(backend::MetalBackend, x::Base.Array) = JACC._array(backend, x)
+JACC.array(::MetalBackend, x::Metal.MtlArray) = x
 
 end # module MetalExt
